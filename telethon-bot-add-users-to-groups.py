@@ -1,4 +1,4 @@
-from telethon.sync import TelegramClient
+from telethon import TelegramClient
 from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty, InputPeerChannel, InputPeerUser
 from telethon.errors.rpcerrorlist import PeerFloodError, UserPrivacyRestrictedError
@@ -9,19 +9,25 @@ import traceback
 import time
 import random
 import re
+import asyncio
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
-api_id = 000000        # YOUR API_ID
-api_hash = 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'        # YOUR API_HASH
-phone = '+34000000000'        # YOUR PHONE NUMBER, INCLUDING COUNTRY CODE
+api_id = os.getenv("APP_ID")        # YOUR API_ID
+api_hash = os.getenv("API_HASH")       # YOUR API_HASH
+phone = os.getenv("PHONE_NUMBER")       # YOUR PHONE NUMBER, INCLUDING COUNTRY CODE
 client = TelegramClient(phone, api_id, api_hash)
 
-client.connect()
-if not client.is_user_authorized():
-    client.send_code_request(phone)
-    client.sign_in(phone, input('Enter the code: '))
+# client.connect()
 
-def add_users_to_group():
+# if not client.is_user_authorized():
+#     client.send_code_request(phone)
+#     client.sign_in(phone, input('Enter the code: '))
+
+async def add_users_to_group():
     input_file = sys.argv[1]
     users = []
     with open(input_file, encoding='UTF-8') as f:
@@ -43,7 +49,7 @@ def add_users_to_group():
     chunk_size = 10
     groups=[]
 
-    result = client(GetDialogsRequest(
+    result = await client(GetDialogsRequest(
                 offset_date=last_date,
                 offset_id=0,
                 offset_peer=InputPeerEmpty(),
@@ -81,14 +87,14 @@ def add_users_to_group():
             if mode == 1:
                 if user['username'] == "":
                     continue
-                user_to_add = client.get_input_entity(user['username'])
+                user_to_add = await client.get_input_entity(user['username'])
             elif mode == 2:
                 user_to_add = InputPeerUser(user['id'], user['access_hash'])
             else:
                 sys.exit("Invalid Mode Selected. Please Try Again.")
-            client(InviteToChannelRequest(target_group_entity,[user_to_add]))
+            await client(InviteToChannelRequest(target_group_entity,[user_to_add]))
             print("Waiting 60 Seconds...")
-            time.sleep(60)
+            await asyncio.sleep(60)
         except PeerFloodError:
             print("Getting Flood Error from telegram. Script is stopping now. Please try again after some time.")
         except UserPrivacyRestrictedError:
@@ -101,24 +107,27 @@ def add_users_to_group():
                 sys.exit('too many errors')
             continue
 
-def list_users_in_group():
+async def list_users_in_group():
     chats = []
     last_date = None
     chunk_size = 200
     groups=[]
     
-    result = client(GetDialogsRequest(
-                offset_date=last_date,
-                offset_id=0,
-                offset_peer=InputPeerEmpty(),
-                limit=chunk_size,
-                hash = 0
-            ))
-    chats.extend(result.chats)
+    # result = await client(GetDialogsRequest(
+    #             offset_date=last_date,
+    #             offset_id=0,
+    #             offset_peer=InputPeerEmpty(),
+    #             limit=chunk_size,
+    #             hash = 0
+    #         ))
+    result = await client.get_dialogs()
+    chats.extend([d.entity for d in result])
     
     for chat in chats:
         try:
-            print(chat)
+            print(chat.title)
+            # print(chat)
+            
             groups.append(chat)
             # if chat.megagroup== True:
         except:
@@ -137,13 +146,14 @@ def list_users_in_group():
     
     print('Fetching Members...')
     all_participants = []
-    all_participants = client.get_participants(target_group, aggressive=True)
+    all_participants = await client.get_participants(target_group, aggressive=True)
     
     print('Saving In file...')
     with open("members-" + re.sub("-+","-",re.sub("[^a-zA-Z]","-",str.lower(target_group.title))) + ".csv","w",encoding='UTF-8') as f:
         writer = csv.writer(f,delimiter=",",lineterminator="\n")
-        writer.writerow(['username','user id', 'access hash','name','group', 'group id'])
+        writer.writerow(['username','user id', 'access hash','name','group', 'group id', 'online', 'bot', 'phone'])
         for user in all_participants:
+
             if user.username:
                 username= user.username
             else:
@@ -157,7 +167,26 @@ def list_users_in_group():
             else:
                 last_name= ""
             name= (first_name + ' ' + last_name).strip()
-            writer.writerow([username,user.id,user.access_hash,name,target_group.title, target_group.id])      
+            
+            # Handle different status types
+            online_status = "Unknown"
+            if user.status is None:
+                online_status = "Never"
+            elif hasattr(user.status, 'was_online'):
+                # UserStatusOffline
+                online_status = user.status.was_online
+            elif user.status.__class__.__name__ == 'UserStatusOnline':
+                online_status = "Online"
+            elif user.status.__class__.__name__ == 'UserStatusRecently':
+                online_status = "Recently"
+            elif user.status.__class__.__name__ == 'UserStatusLastWeek':
+                online_status = "Last week"
+            elif user.status.__class__.__name__ == 'UserStatusLastMonth':
+                online_status = "Last month"
+            else:
+                online_status = str(user.status.__class__.__name__)
+            
+            writer.writerow([username,user.id,user.access_hash,name,target_group.title, target_group.id, online_status, user.bot, user.phone])  
     print('Members scraped successfully.')
 
 def printCSV():
@@ -179,12 +208,21 @@ def printCSV():
 # print('Fetching Members...')
 # all_participants = []
 # all_participants = client.get_participants(target_group, aggressive=True)
-print('What do you want to do:')
-mode = int(input("Enter \n1-List users in a group\n2-Add users from CSV to Group (CSV must be passed as a parameter to the script\n3-Show CSV\n\nYour option:  "))
 
-if mode == 1:
-    list_users_in_group()
-elif mode == 2:
-    add_users_to_group()
-elif mode == 3:
-    printCSV()
+async def main():
+    await client.start()
+    
+    print('What do you want to do:')
+    mode = int(input("Enter \n1-List users in a group\n2-Add users from CSV to Group (CSV must be passed as a parameter to the script\n3-Show CSV\n\nYour option:  "))
+
+    if mode == 1:
+        await list_users_in_group()
+    elif mode == 2:
+        await add_users_to_group()
+    elif mode == 3:
+        printCSV()
+    
+    await client.disconnect()
+
+if __name__ == "__main__":
+    asyncio.run(main())
